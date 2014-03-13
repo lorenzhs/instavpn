@@ -1,0 +1,10 @@
+API_KEY = '123abc'
+CLIENT_ID = '456def'
+
+REGION = 'nyc2'
+NAME = 'instavpn'
+SIZE = '512mb'
+IMAGE = 'debian-7-0-x64'
+SSH_KEY_IDS = ['123']
+
+MAX_RETRIES = 15
