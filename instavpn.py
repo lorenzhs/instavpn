@@ -3,7 +3,13 @@
 
 import argparse
 import json
+import os
+import re
 import requests
+import shlex
+import shutil
+import subprocess
+import sys
 import time
 
 import settings
@@ -67,16 +73,48 @@ class API(object):
         arguments['private_networking'] = 'false'
         arguments['backups_enabled'] = 'false'
 
-        print arguments
+        print(arguments)
 
         response = self._get('droplets/new', arguments)
         return response
 
+class DeploymentModule(object):
+    def __init__(self):
+        pass
+
+    def prepare(self):
+        self.sshuttle_path = shutil.which('sshuttle')
+        if not self.sshuttle_path:
+            print('Could not find sshuttle in path, cloning repository...')
+            path = os.path.join(os.getcwd(), 'sshuttle')
+            self._clone(path)
+            self.sshuttle_path = os.path.join(path, 'sshuttle')
+
+    def _clone(self, path):
+        if not os.path.exists(path):
+            status = subprocess.call(['git', 'clone', 'git://github.com/apenwarr/sshuttle', path])
+            if status != 0:
+                raise ValueError('could not clone sshuttle repository')
+
+    def connect(self, remote, proxyDns, subnet, additional):
+        dns = '--dns' if proxyDns else None
+        additional_args = shlex.split(additional)
+
+        args = [self.sshuttle_path, dns, '-vr', remote, subnet]
+        args += additional_args
+        args = list(filter(lambda x: type(x) is str, args))
+
+        print('Connecting to sshuttle with command', ' '.join(args))
+        proc = subprocess.Popen(args)
+        proc.communicate()
+
 class InstaVPN(object):
     def __init__(self):
         self.api = API()
+        self.deployer = DeploymentModule()
 
     def createMachine(self, args, ssh_keys):
+        start_time = time.time()
         droplet = self.api.createDroplet(args.region, args.droplet_name, args.droplet_size, args.image, ssh_keys)
         droplet_id = droplet["droplet"]["id"]
         print(droplet, droplet_id)
@@ -95,7 +133,8 @@ class InstaVPN(object):
                 retries += 1
             elif status == "active":
                 # Machine is up and running!
-                print("Droplet is up and running!")
+                duration = time.time() - start_time
+                print("Droplet is up and running! Duration: {time:.0f}s".format(time=duration))
                 break
             else:
                 print("Droplet has weird status:", status, json.dums(state, indent=4))
@@ -107,20 +146,25 @@ class InstaVPN(object):
             raise ValueError("failed to create droplet :(")
 
         print(json.dumps(state, indent=4))
-        ip = state["droplet"]["ip"]
         return state
 
-    def prepareMachine(self, status):
+    def connect(self, status, subnet, proxyDns, additional_args):
         droplet = status["droplet"]
         droplet_id = droplet["id"]
         droplet_ip = droplet["ip_address"]
 
-        return status
+        remote = 'root@' + droplet_ip
+
+        self.deployer.prepare()
+        self.deployer.connect(remote, subnet, proxyDns, additional_args)
 
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Instant OpenVPN via DigitalOcean')
+    parser = argparse.ArgumentParser(description='Instant sshuttle VPN via DigitalOcean')
+    parser.add_argument('-d', '--dns', dest='proxyDns', action='store_true', default=settings.PROXY_DNS, help='Proxy DNS queries through VPN')
+    parser.add_argument('-l', '--subnet', type=str, dest='subnet', default=settings.SUBNET, help='Subnet mask to forward through VPN')
+    parser.add_argument('-p', '--params', type=str, dest='additional_args', default=settings.ADDITIONAL_ARGS, help='Additional arguments to pass to sshuttle')
     parser.add_argument('-r', '--region', type=str, dest='region', default=settings.REGION, help='Region to create the droplet in (slug or id)')
     parser.add_argument('-n', '--name', type=str, dest='droplet_name', default=settings.NAME, help='Name of the droplet')
     parser.add_argument('-s', '--size', type=str, dest='droplet_size', default=settings.SIZE, help='Droplet size (slug or id)')
@@ -130,6 +174,10 @@ if __name__ == '__main__':
     parser.add_argument('--debug-state', type=str, dest='debugstate', help='Load droplet state from JSON string')
     args = parser.parse_args()
 
+    name_regex = re.compile('^[a-zA-Z0-9\.-]+$')
+    if not name_regex.match(args.droplet_name):
+        print("Only valid hostname characters are allowed. (a-z, A-Z, 0-9, . and -)")
+        sys.exit(1)
 
     vpn = InstaVPN()
     if args.debugstate:
@@ -140,5 +188,4 @@ if __name__ == '__main__':
             ssh_keys = getSshKeys()
 
         status = vpn.createMachine(args, ssh_keys)
-    status = vpn.prepareMachine(status)
-    print(status)
+    status = vpn.connect(status, args.proxyDns, args.subnet, args.additional_args)
