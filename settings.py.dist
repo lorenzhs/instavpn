@@ -6,6 +6,10 @@ PROXY_DNS = False
 SUBNET = '0/0'
 ADDITIONAL_ARGS = ''
 
+SELF_DESTRUCT = True
+SELF_DESTRUCT_TIMEOUT = 1200
+SCRUB = False
+
 REGION = 'nyc2'
 NAME = 'instavpn'
 SIZE = '512mb'
