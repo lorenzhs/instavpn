@@ -12,5 +12,4 @@ instavpn provides you with a working VPN connection in a minute. It will create 
 A tool to add a VPN to your existing droplet/machine. Just use sshuttle directly.
 
 ## TODO
-- destroy droplet immediately when manually exiting the VPN (not just after 20mins of inactivity)
 - more robust droplet self-destruction mechanism. Waiting until no `python2` process has existed for 20 minutes is rather hacky

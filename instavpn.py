@@ -8,8 +8,10 @@ import re
 import requests
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 import settings
@@ -73,14 +75,15 @@ class API(object):
         arguments['private_networking'] = 'false'
         arguments['backups_enabled'] = 'false'
 
-        print(arguments)
-
         response = self._get('droplets/new', arguments)
         return response
 
     def destruct_command(self, id, scrub):
         return 'https://api.digitalocean.com/droplets/{droplet_id}/destroy/?scrub={scrub}&api_key={api_key}&client_id={client_id}'.format(
             droplet_id=id, scrub=scrub, api_key=settings.API_KEY, client_id=settings.CLIENT_ID)
+
+    def destroy_droplet(self, id, scrub):
+        return self._get('droplets/{id}/destroy/?scrub={scrub}'.format(id=id, scrub=scrub))
 
 class DeploymentModule(object):
     def __init__(self):
@@ -100,7 +103,7 @@ class DeploymentModule(object):
             if status != 0:
                 raise ValueError('could not clone sshuttle repository')
 
-    def connect(self, remote, proxyDns, subnet, additional):
+    def connect(self, remote, proxyDns, subnet, additional, destruction_callback):
         dns = '--dns' if proxyDns else None
         additional_args = shlex.split(additional)
 
@@ -108,9 +111,33 @@ class DeploymentModule(object):
         args += additional_args
         args = list(filter(lambda x: type(x) is str, args))
 
+        # Callback for sshuttle thread
+        self.destruction_callback = destruction_callback
         print('Connecting to sshuttle with command', ' '.join(args))
-        proc = subprocess.Popen(args)
-        proc.communicate()
+
+        # Based on http://stackoverflow.com/a/2581943 by
+        # StackOverflow User Daniel G
+        def asyncRunner(args, parentself):
+            parentself.proc = subprocess.Popen(args)
+            parentself.proc.communicate()
+            returncode = parentself.proc.wait()
+            print("sshuttle exited with return code", returncode)
+            # sshuttle exited
+            if returncode == 1:
+                # Tear down droplet
+                print('Initiating droplet destruction...')
+                parentself.destruction_callback()
+                print('Droplet destroyed')
+
+        thread = threading.Thread(target=asyncRunner, args=(args,self))
+        # Capture SIGINT and pass it on to sshuttle
+        signal.signal(signal.SIGINT, self._signal_handler)
+        thread.start()
+
+    def _signal_handler(self, signum, frame):
+        # Pass Ctrl+C on to sshuttle
+        self.proc.send_signal(signal.SIGINT)
+
 
 class InstaVPN(object):
     def __init__(self):
@@ -152,20 +179,22 @@ class InstaVPN(object):
         print(json.dumps(state))
         return state
 
-    def connect(self, status, subnet, proxyDns, additional_args):
+    def connect(self, status, subnet, proxyDns, additional_args, scrub):
         droplet = status["droplet"]
-        droplet_id = droplet["id"]
-        droplet_ip = droplet["ip_address"]
+        self.droplet_id = droplet["id"]
+        self.droplet_ip = droplet["ip_address"]
+        self.scrub = scrub
 
-        remote = 'root@' + droplet_ip
+        remote = 'root@' + self.droplet_ip
 
         self.deployer.prepare()
-        self.deployer.connect(remote, subnet, proxyDns, additional_args)
+        self.deployer.connect(remote, subnet, proxyDns, additional_args, self._destroy_droplet)
 
-    def initiate_self_destruct(self, status, self_destruct_timeout, scrub):
-        droplet_id = status["droplet"]["id"]
-        droplet_ip = status["droplet"]["ip_address"]
-        apicall = self.api.destruct_command(droplet_id, scrub)
+    def _destroy_droplet(self):
+        self.api.destroy_droplet(self.droplet_id, self.scrub)
+
+    def initiate_self_destruct(self, self_destruct_timeout, scrub):
+        apicall = self.api.destruct_command(self.droplet_id, scrub)
         destruct_command = """\"\
 while true
 do
@@ -192,7 +221,7 @@ echo curling >> log
 curl \\\"{apicall}\\\" >> log 2>> log
 echo done >> log\"""".format(timeout=self_destruct_timeout, apicall=apicall)
 
-        remote = 'root@' + droplet_ip
+        remote = 'root@' + self.droplet_ip
         proc = subprocess.Popen(['ssh', remote, 'nohup', 'bash', '-c', destruct_command])
 
 
@@ -203,8 +232,8 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--subnet', type=str, dest='subnet', default=settings.SUBNET, help='Subnet mask to forward through VPN')
     parser.add_argument('-p', '--params', type=str, dest='additional_args', default=settings.ADDITIONAL_ARGS, help='Additional arguments to pass to sshuttle')
     # Destruction arguments
-    parser.add_argument('--no-self-destruct', dest='self_destruct', action='store_false', default=settings.SELF_DESTRUCT, help='Self destruct droplet after inactivity period')
-    parser.add_argument('--self-destruct-timeout', type=int, dest='self_destruct_timeout', default=settings.SELF_DESTRUCT_TIMEOUT, help='Self destruct interval (seconds)')
+    parser.add_argument('--no-self-destruct', dest='self_destruct', action='store_false', default=settings.SELF_DESTRUCT, help='Do not self destruct droplet after inactivity period. Droplet will still be destroyed when InstaVPN is quit')
+    parser.add_argument('--self-destruct-timeout', type=int, dest='self_destruct_timeout', default=settings.SELF_DESTRUCT_TIMEOUT, help='Timeout for droplet self destruction after connection loss (seconds)')
     parser.add_argument('--scrub', dest='scrub', action='store_true', default=settings.SCRUB, help='Scrub droplet after destruction')
     # Droplet arguments
     parser.add_argument('-r', '--region', type=str, dest='region', default=settings.REGION, help='Region to create the droplet in (slug or id)')
@@ -214,7 +243,7 @@ if __name__ == '__main__':
     parser.add_argument('--all-keys', dest='all_keys', default=False, help='Retrieve and add all keys in your account to the droplet')
     parser.add_argument('-k', '--keys', type=csv, dest='ssh_keys', default=settings.SSH_KEY_IDS, help='SSH key IDs to add to your droplet')
     # Debug
-    parser.add_argument('--debug-state', type=str, dest='debugstate', help='Load droplet state from JSON string')
+    parser.add_argument('--debug-state', type=str, dest='debugstate', help='Load droplet state from JSON string instead of creating new droplet')
     args = parser.parse_args()
 
     name_regex = re.compile('^[a-zA-Z0-9\.-]+$')
@@ -231,7 +260,7 @@ if __name__ == '__main__':
             ssh_keys = getSshKeys()
 
         status = vpn.createMachine(args, ssh_keys)
-    vpn.connect(status, args.proxyDns, args.subnet, args.additional_args)
+    vpn.connect(status, args.proxyDns, args.subnet, args.additional_args, args.scrub)
     if (args.self_destruct):
         print("Setting up self-destruct mechanism on droplet...")
-        vpn.initiate_self_destruct(status, args.self_destruct_timeout, args.scrub)
+        vpn.initiate_self_destruct(args.self_destruct_timeout, args.scrub)
