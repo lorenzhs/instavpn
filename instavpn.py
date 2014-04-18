@@ -27,6 +27,7 @@ def parseSlugOrId(name, value):
         return '{name}_slug'.format(name=name)
 
 class API(object):
+    # Do an API call (private auxiliary method)
     def _get(self, command, arguments=dict()):
         url = 'https://api.digitalocean.com/{command}'.format(command=command)
 
@@ -44,9 +45,7 @@ class API(object):
         else:
             raise ValueError('API call failed: ' + response.text)
 
-    def getRegions(self):
-        return self._get('regions/')
-
+    # Retrieve SSH keys in account
     def getSshKeys(self):
         data = self._get('ssh_keys/')
         keys = []
@@ -55,10 +54,11 @@ class API(object):
                 keys.append(key['id'])
         return keys
 
+    # Get droplet status by id
     def status(self, droplet_id):
         return self._get('droplets/{id}'.format(id=droplet_id))
 
-
+    # Create a new droplet
     def createDroplet(self, region, droplet_name, size, image, keys):
         arguments = dict()
 
@@ -78,17 +78,18 @@ class API(object):
         response = self._get('droplets/new', arguments)
         return response
 
+    # Get full droplet destruction URL for self-destruction mechanism
     def destruct_command(self, id, scrub):
         return 'https://api.digitalocean.com/droplets/{droplet_id}/destroy/?scrub={scrub}&api_key={api_key}&client_id={client_id}'.format(
             droplet_id=id, scrub=scrub, api_key=settings.API_KEY, client_id=settings.CLIENT_ID)
 
+    # Destroy a droplet
     def destroy_droplet(self, id, scrub):
         return self._get('droplets/{id}/destroy/?scrub={scrub}'.format(id=id, scrub=scrub))
 
+# VPN deployment module
 class DeploymentModule(object):
-    def __init__(self):
-        pass
-
+    # Find or install sshuttle
     def prepare(self):
         self.sshuttle_path = shutil.which('sshuttle')
         if not self.sshuttle_path:
@@ -97,12 +98,14 @@ class DeploymentModule(object):
             self._clone(path)
             self.sshuttle_path = os.path.join(path, 'sshuttle')
 
+    # clone sshuttle repository
     def _clone(self, path):
         if not os.path.exists(path):
             status = subprocess.call(['git', 'clone', 'git://github.com/apenwarr/sshuttle', path])
             if status != 0:
                 raise ValueError('could not clone sshuttle repository')
 
+    # connect to droplet
     def connect(self, remote, proxyDns, subnet, additional, destruction_callback):
         dns = '--dns' if proxyDns else None
         additional_args = shlex.split(additional)
@@ -144,8 +147,10 @@ class InstaVPN(object):
         self.api = API()
         self.deployer = DeploymentModule()
 
+    # Create a droplet
     def createMachine(self, args, ssh_keys):
-        start_time = time.time()
+        start_time = time.time()  # for time measurement
+        # Initiate droplet creation
         droplet = self.api.createDroplet(args.region, args.droplet_name, args.droplet_size, args.image, ssh_keys)
         droplet_id = droplet["droplet"]["id"]
         print('Droplet creation initiated, id={id}'.format(id=droplet_id))
@@ -155,30 +160,31 @@ class InstaVPN(object):
 
         retries = 0
         state = dict()
+        # Periodically check droplet status
         while retries < settings.MAX_RETRIES:
             state = self.api.status(droplet_id)
             status = state["droplet"]["status"]
             if status == "new":
                 print("Droplet not yet active, retrying in 5s")
-                time.sleep(5)
-                retries += 1
             elif status == "active":
                 # Machine is up and running!
                 duration = time.time() - start_time
                 print("Droplet is up and running! Duration: {time:.0f}s".format(time=duration))
                 break
             else:
-                print("Droplet has weird status:", status, json.dums(state, indent=4))
-                time.sleep(5)
-                retries += 1
+                print("Droplet has weird status, retrying in 5s:", status, json.dums(state, indent=4))
+            time.sleep(5)
+            retries += 1
 
         if not status:
             # Failed to create droplet
             raise ValueError("failed to create droplet :(")
 
+        # Dump droplet state, which can be passed into --debug-state
         print(json.dumps(state))
         return state
 
+    # Set up and connect VPN
     def connect(self, status, subnet, proxyDns, additional_args, scrub):
         droplet = status["droplet"]
         self.droplet_id = droplet["id"]
@@ -190,11 +196,14 @@ class InstaVPN(object):
         self.deployer.prepare()
         self.deployer.connect(remote, subnet, proxyDns, additional_args, self._destroy_droplet)
 
+    # Tear down droplet
     def _destroy_droplet(self):
         self.api.destroy_droplet(self.droplet_id, self.scrub)
 
+    # Set up droplet self-destruction mechanism
     def initiate_self_destruct(self, self_destruct_timeout, scrub):
         apicall = self.api.destruct_command(self.droplet_id, scrub)
+        # Hacky shell code for droplet self-destruction. TODO: something nicer.
         destruct_command = """\"\
 while true
 do
@@ -246,11 +255,13 @@ if __name__ == '__main__':
     parser.add_argument('--debug-state', type=str, dest='debugstate', help='Load droplet state from JSON string instead of creating new droplet')
     args = parser.parse_args()
 
+    # Verify droplet name validity
     name_regex = re.compile('^[a-zA-Z0-9\.-]+$')
     if not name_regex.match(args.droplet_name):
         print("Only valid hostname characters are allowed. (a-z, A-Z, 0-9, . and -)")
         sys.exit(1)
 
+    # Set up droplet or load state
     vpn = InstaVPN()
     if args.debugstate:
         status = json.loads(args.debugstate)
@@ -260,6 +271,8 @@ if __name__ == '__main__':
             ssh_keys = getSshKeys()
 
         status = vpn.createMachine(args, ssh_keys)
+
+    # Connect to droplet
     vpn.connect(status, args.proxyDns, args.subnet, args.additional_args, args.scrub)
     if (args.self_destruct):
         print("Setting up self-destruct mechanism on droplet...")
