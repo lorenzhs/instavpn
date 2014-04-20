@@ -40,6 +40,10 @@ SELF_DESTRUCT_TIMEOUT = 1200
 # billed time). Not needed, because no private information is stored on the
 # droplet
 SCRUB = False
+# Remove droplet ssh host key from ~/.ssh/known_hosts after droplet destruction
+# DigitalOcean often gives us the same IP again, so this prevents ssh host key
+# mismatches from preventing sshuttle from connecting.
+REMOVE_FROM_HOSTS = True
 
 
 ##

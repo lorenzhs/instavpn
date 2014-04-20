@@ -19,7 +19,6 @@ import settings
 def csv(value):
     return value.split(",")
 
-
 def parseSlugOrId(name, value):
     if (value.isdigit()):
         return '{name}_id'.format(name=name)
@@ -128,9 +127,7 @@ class DeploymentModule(object):
             # sshuttle exited
             if returncode == 1:
                 # Tear down droplet
-                print('Initiating droplet destruction...')
                 parentself.destruction_callback()
-                print('Droplet destroyed')
 
         thread = threading.Thread(target=asyncRunner, args=(args,self))
         # Capture SIGINT and pass it on to sshuttle
@@ -185,20 +182,32 @@ class InstaVPN(object):
         return state
 
     # Set up and connect VPN
-    def connect(self, status, subnet, proxyDns, additional_args, scrub):
+    def connect(self, status, args):
         droplet = status["droplet"]
         self.droplet_id = droplet["id"]
         self.droplet_ip = droplet["ip_address"]
-        self.scrub = scrub
+        self.scrub = args.scrub
+        self.remove_from_hosts = args.remove_from_hosts
 
         remote = 'root@' + self.droplet_ip
 
         self.deployer.prepare()
-        self.deployer.connect(remote, subnet, proxyDns, additional_args, self._destroy_droplet)
+        self.deployer.connect(remote, args.proxyDns, args.subnet, args.additional_args, self._destroy_droplet)
 
     # Tear down droplet
     def _destroy_droplet(self):
-        self.api.destroy_droplet(self.droplet_id, self.scrub)
+        print('Initiating droplet destruction...')
+        response = self.api.destroy_droplet(self.droplet_id, self.scrub)
+        destroyed = "status" in response and response["status"] == "OK"
+
+        if destroyed:
+            print('Droplet successfully destroyed')
+            if self.remove_from_hosts:
+                subprocess.Popen("ssh-keygen -f ~/.ssh/known_hosts -R {ip}".format(ip=self.droplet_ip), shell=True)
+        else:
+            url = 'https://cloud.digitalocean.com/droplets/{id}'.format(id=self.droplet_id)
+            print('Error destroying droplet. This shouldn\'t have happened.\
+Please destroy the droplet manually at {url}'.format(url=url))
 
     # Set up droplet self-destruction mechanism
     def initiate_self_destruct(self, self_destruct_timeout, scrub):
@@ -244,6 +253,7 @@ if __name__ == '__main__':
     parser.add_argument('--no-self-destruct', dest='self_destruct', action='store_false', default=settings.SELF_DESTRUCT, help='Do not self destruct droplet after inactivity period. Droplet will still be destroyed when InstaVPN is quit')
     parser.add_argument('--self-destruct-timeout', type=int, dest='self_destruct_timeout', default=settings.SELF_DESTRUCT_TIMEOUT, help='Timeout for droplet self destruction after connection loss (seconds)')
     parser.add_argument('--scrub', dest='scrub', action='store_true', default=settings.SCRUB, help='Scrub droplet after destruction')
+    parser.add_argument('--keep-hostkey', dest='remove_from_hosts', action='store_false', default=settings.REMOVE_FROM_HOSTS, help='Don\'t remove SSH host key from ~/.ssh/known_hosts file after successful droplet destruction')
     # Droplet arguments
     parser.add_argument('-r', '--region', type=str, dest='region', default=settings.REGION, help='Region to create the droplet in (slug or id)')
     parser.add_argument('-n', '--name', type=str, dest='droplet_name', default=settings.NAME, help='Name of the droplet')
@@ -273,7 +283,7 @@ if __name__ == '__main__':
         status = vpn.createMachine(args, ssh_keys)
 
     # Connect to droplet
-    vpn.connect(status, args.proxyDns, args.subnet, args.additional_args, args.scrub)
+    vpn.connect(status, args)
     if (args.self_destruct):
         print("Setting up self-destruct mechanism on droplet...")
         vpn.initiate_self_destruct(args.self_destruct_timeout, args.scrub)
