@@ -18,6 +18,3 @@ instavpn provides you with a working VPN connection in a minute. It will create 
 
 ## Configuration
 Before you can get started, you need to create a `settings.py` with your API key. Just copy over `settings.py.dist`, pop in your API key and Client ID – you can find them both in your [DigitalOcean control panel](https://cloud.digitalocean.com/api_access) – and have a look over the default values for the other settings. I'd consider the defaults sane, so you probably won't need to change that much, maybe the region where to create your droplet or the subnet that you want to forward through the VPN.
-
-## TODO
-- more robust droplet self-destruction mechanism. Waiting until no `python2` process has existed for 20 minutes is rather hacky
