@@ -15,6 +15,7 @@ instavpn provides you with a working VPN connection in a minute. It will create 
 ## What this is not
 - A tool to add a VPN to your existing droplet/machine. Just use sshuttle directly.
 - A mature piece of software. **Please check if your droplet was really destroyed automatically** and file an issue if it wasn't, but don't tell me I didn't warn you!
+- IPv6 ready. Blame DigitalOcean for not supporting it! :(
 
 ## Configuration
 Before you can get started, you need to create a `settings.py` with your API key. Just copy over `settings.py.dist`, pop in your API key and Client ID – you can find them both in your [DigitalOcean control panel](https://cloud.digitalocean.com/api_access) – and have a look over the default values for the other settings. I'd consider the defaults sane, so you probably won't need to change that much, maybe the region where to create your droplet or the subnet that you want to forward through the VPN.
