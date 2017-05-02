@@ -1,6 +1,8 @@
 instavpn
 ========
 
+### Please note that this project has been abandoned and might or might not work.
+
 Create and set up an instant VPN using DigitalOcean and sshuttle
 
 This is useful in a number of scenarios:
